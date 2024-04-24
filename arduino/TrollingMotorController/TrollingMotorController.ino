@@ -1,10 +1,12 @@
-#include <AccelStepper.h>
+//Re-write of TrollingMotorController to use Servo-style PWM outputs instead of direct stepper control. Remove all calibration too.
+
+#include <Servo.h>
 #include <math.h>
 #include <CmdBuffer.hpp>
 #include <CmdCallback.hpp>
 #include <CmdParser.hpp>
 
-const String version = "v0.0.4";
+const String version = "v0.0.5";
 
 ///////////////////////////////
 // Options
@@ -12,37 +14,34 @@ const String version = "v0.0.4";
 // Communication
 const int baudRate = 19200;
 
+///////////////////////////////
+// RC Servo Pulse Widths
+///////////////////////////////
+
+const int stoppedPulseWidth = 1500; //us
+const int fullForwardPulseWidth = 2000; //us
+const int fullReversePulseWidth = 1000; //us 
 
 ///////////////////////////////
 // Steering
 ///////////////////////////////
 
-const double stepsPerRevolution = 200;
+const int stepsPerRevolution = 200;
+const int stepsLeft = 60;
+const int stepsRight = 60;
 
-
-
-// Stepper pinout
-const int stepperA1 = 8;
-const int stepperA2 = 9;
-const int stepperB1 = 10;
-const int stepperB2 = 11;
-const int stepperDefaultAcceleration = 460;
-const int stepperCalibrationSensorPin = 5;
-bool stepperCalibrateSensorUndetectedState = true; // state of calibration sensor in undetected state
+// Stepper controller pinout
+const int stepperRcPin = 9;
 const int stepperDefaultSpeed = 180;
 
 ///////////////////////////////
 // Trolling motor controller
 ///////////////////////////////
-const int trollingMotorPwm = 3; // Pin for enabling trolling motor
-const int trollingMotorFw = 6; // Run trolling motor forward
-const int trollingMotorRev = 7; // Run trolling motor reverse
+const int trollingMotorFwReverseDelay = 500; // ms (delay between reverse and forwarding, to not destroy the engine)
+const int rampTime = 800; //ms
 
-const int trollingMotorFwReverseDelay = 900; // ms (delay between reverse and forwarding, to not destroy the engine)
-int rampTime = 800; //ms
-// Other
-const int outputDelay = 500; // ms
-
+// DC Motor controller pinout
+const int trollingMotorRcPin = 10; // Pin for enabling trolling motor
 
 // Init vars
 double long lastOutput = millis();
@@ -70,8 +69,9 @@ bool set_motorRev;
 // INIT
 ///////////////////////////////
 
-// Stepper
-AccelStepper stepper(AccelStepper::FULL4WIRE, stepperA1, stepperA2, stepperB1, stepperB2);
+// Servos
+Servo steeringServo;
+Servo motorServo;
 
 // CMD
 CmdCallback<3> cmdCallback;
@@ -89,22 +89,15 @@ char strPing[] = "PING";
 // Init functions
 
 
-void enableMotor(bool reverse=false){
-  digitalWrite(trollingMotorFw, reverse != true);
-  digitalWrite(trollingMotorRev, reverse);
-}
-
 
 void setup() {
 
-  // Change PWM frequency on PIN3 / PIN11 to 31372.55Hz
-  TCCR2B = TCCR2B & B11111000 | B00000001;
   
   Serial.begin(baudRate);
 
-  // Set pins
-  Serial.println("SETUP: pinmode");
-  pinMode(stepperCalibrationSensorPin, INPUT);
+  // Set Servos
+  steeringServo.attach(stepperRcPin);
+  motorServo.attach(trollingMotorRcPin);
 
   // CMD
   lastOutput = millis();
@@ -128,31 +121,29 @@ void loop()
       Serial.begin(baudRate); // reenable serial again
   }
   else{
-    stepper.run();
-  
-    rampMotor();
 
-    if(stepper.distanceToGo() == 0){
-      stepper.disableOutputs();
-    }
-            
-    if(digitalRead(stepperCalibrationSensorPin)){
-      calibBegin = stepper.currentPosition(); 
-    }
-    
-    if(digitalRead(stepperCalibrationSensorPin)){
-      calibEnd = stepper.currentPosition();
-    }
+    rampMotor();
 
     cmdCallback.updateCmdProcessing(&myParser, &myBuffer, &Serial);
   }
 }
 
-void setMotorSpeed(int speed, bool reverse=false){
+int getTargetPulseWidth(int speed, bool forward=true){
+  int targetPulseWidth;
+  if(forward){
+        targetPulseWidth = speed/100 * (fullForwardPulseWidth - stoppedPulseWidth) + stoppedPulseWidth;
+      }
+      else {
+        targetPulseWidth = speed/100 * (fullReversePulseWidth - stoppedPulseWidth) + stoppedPulseWidth;
+      }
+}
 
+void setMotorSpeed(int speed, bool reverse=false){
+  int targetPulseWidth;
   
   if(motorSpeed < speed && (reverse && motor_forward == true) != true && (reverse == false && motor_forward == false) != true){
-    analogWrite(trollingMotorPwm, motorSpeed*2.5);
+    
+    motorServo.writeMicroseconds(getTargetPulseWidth(motorSpeed,motor_forward));
   }
 
   lastMotorSpeed = motorSpeed;
@@ -161,10 +152,7 @@ void setMotorSpeed(int speed, bool reverse=false){
   if(reverse && motor_forward == true){
     motor_forward = false;
     ramping = false;
-    analogWrite(trollingMotorPwm, 0);
-    
-    digitalWrite(trollingMotorFw, false);
-    digitalWrite(trollingMotorRev, true);
+    motorServo.writeMicroseconds(stoppedPulseWidth);
     
     rampStart = millis() + trollingMotorFwReverseDelay;
   }
@@ -172,11 +160,8 @@ void setMotorSpeed(int speed, bool reverse=false){
     motor_forward = true;
     ramping = false;
 
-    analogWrite(trollingMotorPwm, 0);
+    motorServo.writeMicroseconds(stoppedPulseWidth);
 
-    digitalWrite(trollingMotorFw, true);
-    digitalWrite(trollingMotorRev, false);
-    
     rampStart = millis() + trollingMotorFwReverseDelay;
   }
   else {
@@ -190,7 +175,7 @@ void setMotorSpeed(int speed, bool reverse=false){
 }
 
 void rampMotor(){
-
+  int targetPulseWidth;
   
   if(millis() < (rampStart + rampTime)){
     ramping = true;
@@ -215,7 +200,7 @@ void rampMotor(){
       }
     }
 
-    analogWrite(trollingMotorPwm, newSpeed*2.5);
+    motorServo.writeMicroseconds(getTargetPulseWidth(motorSpeed,motor_forward));
     currentMotorSpeed = newSpeed;
 
   }
@@ -223,7 +208,7 @@ void rampMotor(){
     if(ramping){
       ramping = false;
       currentMotorSpeed = motorSpeed;
-      analogWrite(trollingMotorPwm, motorSpeed*2.5);
+      motorServo.writeMicroseconds(getTargetPulseWidth(motorSpeed,motor_forward));
       Serial.print("rampMotor | Ending motor ramp at ");
       Serial.println(millis());
     }
@@ -236,7 +221,7 @@ void replyPing(CmdParser *myParser){
 }
 
 void calibCmd(CmdParser *myParser){
-  stepper.setCurrentPosition(atoi(myParser->getCmdParam(1)));
+  // stepper.setCurrentPosition(atoi(myParser->getCmdParam(1)));
 }
 
 int cstepperPosition;
