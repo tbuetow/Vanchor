@@ -27,8 +27,8 @@ const int fullReversePulseWidth = 1000; //us
 ///////////////////////////////
 
 const int stepsPerRevolution = 200;
-const int stepsLeft = 60;
-const int stepsRight = 60;
+const int stepsFullLeft = -60*36;
+const int stepsFullRight = 60*36;
 
 // Stepper controller pinout
 const int stepperRcPin = 9;
@@ -128,7 +128,7 @@ void loop()
   }
 }
 
-int getTargetPulseWidth(int speed, bool forward=true){
+int motorTargetPulseWidth(int speed, bool forward=true){
   int targetPulseWidth;
   if(forward){
         targetPulseWidth = speed/100 * (fullForwardPulseWidth - stoppedPulseWidth) + stoppedPulseWidth;
@@ -143,7 +143,7 @@ void setMotorSpeed(int speed, bool reverse=false){
   
   if(motorSpeed < speed && (reverse && motor_forward == true) != true && (reverse == false && motor_forward == false) != true){
     
-    motorServo.writeMicroseconds(getTargetPulseWidth(motorSpeed,motor_forward));
+    motorServo.writeMicroseconds(motorTargetPulseWidth(motorSpeed,motor_forward));
   }
 
   lastMotorSpeed = motorSpeed;
@@ -200,7 +200,7 @@ void rampMotor(){
       }
     }
 
-    motorServo.writeMicroseconds(getTargetPulseWidth(motorSpeed,motor_forward));
+    motorServo.writeMicroseconds(motorTargetPulseWidth(motorSpeed,motor_forward));
     currentMotorSpeed = newSpeed;
 
   }
@@ -208,7 +208,7 @@ void rampMotor(){
     if(ramping){
       ramping = false;
       currentMotorSpeed = motorSpeed;
-      motorServo.writeMicroseconds(getTargetPulseWidth(motorSpeed,motor_forward));
+      motorServo.writeMicroseconds(motorTargetPulseWidth(motorSpeed,motor_forward));
       Serial.print("rampMotor | Ending motor ramp at ");
       Serial.println(millis());
     }
@@ -229,6 +229,7 @@ int cstepperSpeed;
 int cstepperAcceleration;
 int cmotorSpeed;
 bool cmotorRev;
+int steeringTargetPulseWidth;
 
 void updateCmd(CmdParser *myParser){
   cstepperPosition = atoi(myParser->getCmdParam(1));
@@ -239,19 +240,11 @@ void updateCmd(CmdParser *myParser){
   
   
   if(set_stepperPosition != cstepperPosition){
-    stepper.moveTo(cstepperPosition);
+    steeringTargetPulseWidth = (cstepperPosition/(stepsFullRight - stepsFullLeft)) * 500 + stoppedPulseWidth;
+    steeringServo.writeMicroseconds(steeringTargetPulseWidth);
     set_stepperPosition = cstepperPosition;
   }
   
-  if(set_stepperSpeed != cstepperSpeed){
-    set_stepperSpeed = cstepperSpeed;
-    stepper.setMaxSpeed(cstepperSpeed);
-  }
-  
-  if(set_stepperAcceleration != cstepperAcceleration){
-    set_stepperAcceleration = cstepperAcceleration;
-    stepper.setAcceleration(cstepperAcceleration);
-  }
   
   if(set_motorSpeed != cmotorSpeed){
     setMotorSpeed(cmotorSpeed, cmotorRev);
@@ -263,11 +256,7 @@ void updateCmd(CmdParser *myParser){
   Serial.print("SSP:");
   Serial.print(set_stepperPosition);
   Serial.print(" SDTG:");
-  Serial.print(stepper.distanceToGo());
+  Serial.print(steeringTargetPulseWidth);
   Serial.print(" MS:");
   Serial.print(set_motorSpeed);
-  Serial.print(" CB:");
-  Serial.print(calibBegin);
-  Serial.print(" CE:");
-  Serial.println(calibEnd);
 }
